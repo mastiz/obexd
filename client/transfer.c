@@ -55,6 +55,7 @@ struct transfer_callback {
 
 struct obc_transfer {
 	GObex *obex;
+	ObcTransferDirection direction; /* Put or Get */
 	struct obc_transfer_params *params;
 	struct transfer_callback *callback;
 	DBusConnection *conn;
@@ -226,6 +227,7 @@ static void obc_transfer_free(struct obc_transfer *transfer)
 struct obc_transfer *obc_transfer_register(DBusConnection *conn,
 						GObex *obex,
 						const char *agent,
+						ObcTransferDirection dir,
 						const char *filename,
 						const char *name,
 						const char *type,
@@ -235,6 +237,7 @@ struct obc_transfer *obc_transfer_register(DBusConnection *conn,
 
 	transfer = g_new0(struct obc_transfer, 1);
 	transfer->obex = g_obex_ref(obex);
+	transfer->direction = dir;
 	transfer->agent = g_strdup(agent);
 	transfer->filename = g_strdup(filename);
 	transfer->name = g_strdup(name);
@@ -510,16 +513,18 @@ gboolean obc_transfer_set_callback(struct obc_transfer *transfer,
 	return TRUE;
 }
 
-int obc_transfer_get(struct obc_transfer *transfer)
+static gboolean transfer_start_get(struct obc_transfer *transfer, GError **err)
 {
-	GError *err = NULL;
 	GObexPacket *req;
 	GObexDataConsumer data_cb;
 	GObexFunc complete_cb;
 	GObexResponseFunc rsp_cb = NULL;
 
-	if (transfer->xfer != 0)
-		return -EALREADY;
+	if (transfer->xfer > 0) {
+		g_set_error(err, OBC_TRANSFER_ERROR, -EALREADY,
+						"Transfer already started");
+		return FALSE;
+	}
 
 	if (transfer->type != NULL &&
 			(strncmp(transfer->type, "x-obex/", 7) == 0 ||
@@ -530,7 +535,9 @@ int obc_transfer_get(struct obc_transfer *transfer)
 				O_WRONLY | O_CREAT, 0600);
 		if (fd < 0) {
 			error("open(): %s(%d)", strerror(errno), errno);
-			return -errno;
+			g_set_error(err, OBC_TRANSFER_ERROR, -EIO,
+							"Cannot open file");
+			return FALSE;
 		}
 		transfer->fd = fd;
 		data_cb = get_xfer_progress;
@@ -554,26 +561,28 @@ int obc_transfer_get(struct obc_transfer *transfer)
 
 	if (rsp_cb)
 		transfer->xfer = g_obex_send_req(transfer->obex, req, -1,
-						rsp_cb, transfer, &err);
+						rsp_cb, transfer, err);
 	else
 		transfer->xfer = g_obex_get_req_pkt(transfer->obex, req,
 						data_cb, complete_cb, transfer,
-						&err);
+						err);
 
 	if (transfer->xfer == 0)
-		return -ENOTCONN;
+		return FALSE;
 
-	return 0;
+	return TRUE;
 }
 
-int obc_transfer_put(struct obc_transfer *transfer)
+static gboolean transfer_start_put(struct obc_transfer *transfer, GError **err)
 {
-	GError *err = NULL;
 	GObexPacket *req;
 	GObexDataProducer data_cb;
 
-	if (transfer->xfer != 0)
-		return -EALREADY;
+	if (transfer->xfer > 0) {
+		g_set_error(err, OBC_TRANSFER_ERROR, -EALREADY,
+						"Transfer already started");
+		return FALSE;
+	}
 
 	if (transfer->buffer) {
 		data_cb = put_buf_xfer_progress;
@@ -603,11 +612,29 @@ done:
 
 	transfer->xfer = g_obex_put_req_pkt(transfer->obex, req, data_cb,
 						xfer_complete, transfer,
-						&err);
+						err);
 	if (transfer->xfer == 0)
-		return -ENOTCONN;
+		return FALSE;
 
-	return 0;
+	return TRUE;
+}
+
+gboolean obc_transfer_start(struct obc_transfer *transfer, GError **err)
+{
+	switch (transfer->direction) {
+	case OBC_TRANSFER_GET:
+		return transfer_start_get(transfer, err);
+	case OBC_TRANSFER_PUT:
+		return transfer_start_put(transfer, err);
+	}
+
+	g_set_error(err, OBC_TRANSFER_ERROR, -ENOTSUP, "Not supported");
+	return FALSE;
+}
+
+ObcTransferDirection obc_transfer_get_dir(struct obc_transfer *transfer)
+{
+	return transfer->direction;
 }
 
 const void *obc_transfer_get_params(struct obc_transfer *transfer, size_t *size)

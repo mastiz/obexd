@@ -21,6 +21,11 @@
  *
  */
 
+typedef enum {
+	OBC_TRANSFER_GET,
+	OBC_TRANSFER_PUT
+} ObcTransferDirection;
+
 struct obc_transfer_params {
 	void *data;
 	size_t size;
@@ -35,6 +40,7 @@ typedef void (*transfer_callback_t) (struct obc_transfer *transfer,
 struct obc_transfer *obc_transfer_register(DBusConnection *conn,
 					GObex *obex,
 					const char *agent,
+					ObcTransferDirection dir,
 					const char *filename,
 					const char *name,
 					const char *type,
@@ -46,9 +52,9 @@ gboolean obc_transfer_set_callback(struct obc_transfer *transfer,
 					transfer_callback_t func,
 					void *user_data);
 
-int obc_transfer_get(struct obc_transfer *transfer);
-int obc_transfer_put(struct obc_transfer *transfer);
+gboolean obc_transfer_start(struct obc_transfer *transfer, GError **err);
 
+ObcTransferDirection obc_transfer_get_dir(struct obc_transfer *transfer);
 const void *obc_transfer_get_params(struct obc_transfer *transfer,
 								size_t *size);
 const void *obc_transfer_get_buffer(struct obc_transfer *transfer,

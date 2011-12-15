@@ -103,7 +103,7 @@ struct obc_session {
 
 static GSList *sessions = NULL;
 
-static void session_prepare_put(gpointer data, gpointer user_data);
+static void session_start_transfer(gpointer data, gpointer user_data);
 static void session_terminate_transfer(struct obc_session *session,
 					struct obc_transfer *transfer,
 					GError *gerr);
@@ -686,7 +686,7 @@ static void session_request_reply(DBusPendingCall *call, gpointer user_data)
 	DBG("Agent.Request() reply: %s", name);
 
 	if (strlen(name)) {
-		if (p->auth_complete == session_prepare_put)
+		if (obc_transfer_get_dir(transfer) == OBC_TRANSFER_PUT)
 			obc_transfer_set_name(transfer, name);
 		else
 			obc_transfer_set_filename(transfer, name);
@@ -731,7 +731,6 @@ static int pending_request_auth(struct pending_request *p)
 
 static int session_request(struct obc_session *session,
 					struct obc_transfer *transfer,
-					GFunc auth_complete,
 					session_callback_t func,
 					void *data)
 {
@@ -740,7 +739,8 @@ static int session_request(struct obc_session *session,
 
 	obc_transfer_set_callback(transfer, transfer_progress, session);
 
-	p = pending_request_new(session, transfer, auth_complete, func, data);
+	p = pending_request_new(session, transfer, session_start_transfer,
+								func, data);
 
 	if (session->p) {
 		g_queue_push_tail(session->queue, p);
@@ -915,19 +915,15 @@ fail:
 	session_notify_error(session, transfer, err);
 }
 
-static void session_prepare_get(gpointer data, gpointer user_data)
+static void session_start_transfer(gpointer data, gpointer user_data)
 {
 	struct obc_session *session = data;
 	struct obc_transfer *transfer = user_data;
-	int ret;
+	GError *err = NULL;
 
-	ret = obc_transfer_get(transfer);
-	if (ret < 0) {
-		GError *gerr = NULL;
-
-		g_set_error(&gerr, OBEX_IO_ERROR, ret, "%s", strerror(-ret));
-		session_notify_error(session, transfer, gerr);
-		g_clear_error(&gerr);
+	if (!obc_transfer_start(transfer, &err)) {
+		session_notify_error(session, transfer, err);
+		g_clear_error(&err);
 		return;
 	}
 
@@ -959,8 +955,10 @@ int obc_session_get(struct obc_session *session, const char *type,
 		agent = NULL;
 
 	transfer = obc_transfer_register(session->conn, session->obex,
-							agent, targetfile,
-							name, type, params);
+							agent,
+							OBC_TRANSFER_GET,
+							targetfile, name, type,
+							params);
 	if (transfer == NULL) {
 		if (params != NULL) {
 			g_free(params->data);
@@ -969,8 +967,7 @@ int obc_session_get(struct obc_session *session, const char *type,
 		return -EIO;
 	}
 
-	return session_request(session, transfer, session_prepare_get,
-							func, user_data);
+	return session_request(session, transfer, func, user_data);
 }
 
 int obc_session_send(struct obc_session *session, const char *filename,
@@ -985,8 +982,9 @@ int obc_session_send(struct obc_session *session, const char *filename,
 
 	agent = obc_agent_get_name(session->agent);
 
-	transfer = obc_transfer_register(session->conn, session->obex,
-							agent, filename,
+	transfer = obc_transfer_register(session->conn, session->obex, agent,
+							OBC_TRANSFER_PUT,
+							filename,
 							name, NULL, NULL);
 	if (transfer == NULL)
 		return -EINVAL;
@@ -997,8 +995,7 @@ int obc_session_send(struct obc_session *session, const char *filename,
 		return err;
 	}
 
-	return session_request(session, transfer, session_prepare_put,
-								NULL, NULL);
+	return session_request(session, transfer, NULL, NULL);
 }
 
 int obc_session_pull(struct obc_session *session,
@@ -1039,26 +1036,6 @@ fail:
 	return NULL;
 }
 
-static void session_prepare_put(gpointer data, gpointer user_data)
-{
-	struct obc_session *session = data;
-	struct obc_transfer *transfer = user_data;
-	int ret;
-
-	ret = obc_transfer_put(transfer);
-	if (ret < 0) {
-		GError *gerr = NULL;
-
-		g_set_error(&gerr, OBEX_IO_ERROR, ret, "%s (%d)",
-							strerror(-ret), -ret);
-		session_notify_error(session, transfer, gerr);
-		g_clear_error(&gerr);
-		return;
-	}
-
-	DBG("Transfer(%p) started", transfer);
-}
-
 int obc_session_put(struct obc_session *session, char *buf, const char *name)
 {
 	struct obc_transfer *transfer;
@@ -1071,10 +1048,9 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 
 	agent = obc_agent_get_name(session->agent);
 
-	transfer = obc_transfer_register(session->conn, session->obex,
-							agent, NULL,
-							name, NULL,
-							NULL);
+	transfer = obc_transfer_register(session->conn, session->obex, agent,
+							OBC_TRANSFER_PUT,
+							name, NULL, NULL, NULL);
 	if (transfer == NULL) {
 		g_free(buf);
 		return -EIO;
@@ -1082,8 +1058,7 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 
 	obc_transfer_set_buffer(transfer, buf);
 
-	return session_request(session, transfer, session_prepare_put,
-								NULL, NULL);
+	return session_request(session, transfer, NULL, NULL);
 }
 
 static void agent_destroy(gpointer data, gpointer user_data)
