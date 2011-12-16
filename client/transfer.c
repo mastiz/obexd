@@ -38,6 +38,7 @@
 #include <gdbus.h>
 #include <gobex.h>
 
+#include "dbus.h"
 #include "log.h"
 #include "transfer.h"
 
@@ -93,38 +94,16 @@ static GQuark obc_transfer_error_quark(void)
 	return g_quark_from_static_string("obc-transfer-error-quark");
 }
 
-static void append_entry(DBusMessageIter *dict,
-				const char *key, int type, void *val)
+static void __obc_transfer_append_properties(struct obc_transfer *transfer,
+						DBusMessageIter *dict)
 {
-	DBusMessageIter entry, value;
-	const char *signature;
+	obex_dbus_dict_append(dict, "Name", DBUS_TYPE_STRING, &transfer->name);
 
-	dbus_message_iter_open_container(dict, DBUS_TYPE_DICT_ENTRY,
-								NULL, &entry);
+	if (transfer->file_location != NULL)
+		obex_dbus_dict_append(dict, "Filename", DBUS_TYPE_STRING,
+					&transfer->file_location->filename);
 
-	dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-
-	switch (type) {
-	case DBUS_TYPE_STRING:
-		signature = DBUS_TYPE_STRING_AS_STRING;
-		break;
-	case DBUS_TYPE_BYTE:
-		signature = DBUS_TYPE_BYTE_AS_STRING;
-		break;
-	case DBUS_TYPE_UINT64:
-		signature = DBUS_TYPE_UINT64_AS_STRING;
-		break;
-	default:
-		signature = DBUS_TYPE_VARIANT_AS_STRING;
-		break;
-	}
-
-	dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT,
-							signature, &value);
-	dbus_message_iter_append_basic(&value, type, val);
-	dbus_message_iter_close_container(&entry, &value);
-
-	dbus_message_iter_close_container(dict, &entry);
+	obex_dbus_dict_append(dict, "Size", DBUS_TYPE_UINT64, &transfer->size);
 }
 
 static DBusMessage *obc_transfer_get_properties(DBusConnection *connection,
@@ -147,12 +126,7 @@ static DBusMessage *obc_transfer_get_properties(DBusConnection *connection,
 			DBUS_TYPE_STRING_AS_STRING DBUS_TYPE_VARIANT_AS_STRING
 			DBUS_DICT_ENTRY_END_CHAR_AS_STRING, &dict);
 
-	append_entry(&dict, "Name", DBUS_TYPE_STRING, &transfer->name);
-	append_entry(&dict, "Size", DBUS_TYPE_UINT64, &transfer->size);
-
-	if (transfer->file_location != NULL)
-		append_entry(&dict, "Filename", DBUS_TYPE_STRING,
-					&transfer->file_location->filename);
+	__obc_transfer_append_properties(transfer, &dict);
 
 	dbus_message_iter_close_container(&iter, &dict);
 
