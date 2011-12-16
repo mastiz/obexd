@@ -36,8 +36,7 @@ struct GObex;
 typedef struct _GObex GObex;
 
 typedef void (*transfer_callback_t) (struct obc_transfer *transfer,
-					gint64 transferred, GError *err,
-					void *user_data);
+					GError *err, void *user_data);
 
 /* takes ownership of obc_transfer_params */
 struct obc_transfer *obc_transfer_create(DBusConnection *conn,

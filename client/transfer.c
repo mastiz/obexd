@@ -87,7 +87,6 @@ struct obc_transfer {
 	guint xfer;
 	gint64 size;
 	gint64 transferred;
-	int err;
 };
 
 static GQuark obc_transfer_error_quark(void)
@@ -136,16 +135,7 @@ static DBusMessage *obc_transfer_get_properties(DBusConnection *connection,
 
 static void transfer_notify_progress(struct obc_transfer *transfer)
 {
-	struct transfer_callback *callback = transfer->callback;
-
 	DBG("%p", transfer);
-
-	if ((callback != NULL) && (transfer->transferred < transfer->size)) {
-		transfer->callback = NULL;
-		callback->func(transfer, transfer->transferred, NULL,
-								callback->data);
-		g_free(callback);
-	}
 }
 
 static void transfer_notify_complete(struct obc_transfer *transfer)
@@ -156,8 +146,7 @@ static void transfer_notify_complete(struct obc_transfer *transfer)
 
 	if (callback != NULL) {
 		transfer->callback = NULL;
-		callback->func(transfer, transfer->transferred, NULL,
-								callback->data);
+		callback->func(transfer, NULL, callback->data);
 		g_free(callback);
 	}
 }
@@ -172,8 +161,7 @@ static void transfer_notify_error(struct obc_transfer *transfer, GError *err)
 
 	if (callback != NULL) {
 		transfer->callback = NULL;
-		callback->func(transfer, transfer->transferred, err,
-								callback->data);
+		callback->func(transfer, err, callback->data);
 		g_free(callback);
 	}
 }
