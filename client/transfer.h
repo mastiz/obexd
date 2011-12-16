@@ -37,10 +37,21 @@ typedef void (*transfer_callback_t) (struct obc_transfer *transfer,
 					gint64 transferred, GError *err,
 					void *user_data);
 
-struct obc_transfer *obc_transfer_register(DBusConnection *conn,
+/* takes ownership of obc_transfer_params */
+struct obc_transfer *obc_transfer_create(DBusConnection *conn,
 					const char *agent,
 					ObcTransferDirection dir,
 					const char *filename,
+					const char *name,
+					const char *type,
+					struct obc_transfer_params *params);
+
+/* similar as above, but from memory. for get operations, buffer must be NULL */
+struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
+					const char *agent,
+					ObcTransferDirection dir,
+					void *buffer, gint64 size,
+					GDestroyNotify buffer_destroy_func,
 					const char *name,
 					const char *type,
 					struct obc_transfer_params *params);
@@ -60,8 +71,6 @@ const void *obc_transfer_get_params(struct obc_transfer *transfer,
 								size_t *size);
 const void *obc_transfer_get_buffer(struct obc_transfer *transfer,
 								size_t *size);
-void obc_transfer_set_buffer(struct obc_transfer *transfer, char *buffer);
-
 void obc_transfer_set_name(struct obc_transfer *transfer, const char *name);
 void obc_transfer_set_filename(struct obc_transfer *transfer,
 					const char *filename);

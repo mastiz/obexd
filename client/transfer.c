@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <assert.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <inttypes.h>
@@ -53,22 +54,30 @@ struct transfer_callback {
 	void *data;
 };
 
+struct file_location {
+	gchar *filename;		/* Local filename */
+	int fd;
+};
+
+struct mem_location {
+	void *buffer;			/* For Get, allocated internally */
+	gint64 buffer_len;
+	GDestroyNotify buffer_destroy_func;
+};
+
 struct obc_transfer {
 	GObex *obex;
 	ObcTransferDirection direction; /* Put or Get */
+	struct file_location *file_location;
+	struct mem_location *mem_location;
 	struct obc_transfer_params *params;
 	struct transfer_callback *callback;
 	DBusConnection *conn;
 	char *agent;		/* Transfer agent */
 	char *path;		/* Transfer path */
-	gchar *filename;	/* Transfer file location */
 	char *name;		/* Transfer object name */
 	char *type;		/* Transfer object type */
-	int fd;
 	guint xfer;
-	char *buffer;
-	size_t buffer_len;
-	int filled;
 	gint64 size;
 	gint64 transferred;
 	int err;
@@ -133,7 +142,10 @@ static DBusMessage *obc_transfer_get_properties(DBusConnection *connection,
 
 	append_entry(&dict, "Name", DBUS_TYPE_STRING, &transfer->name);
 	append_entry(&dict, "Size", DBUS_TYPE_UINT64, &transfer->size);
-	append_entry(&dict, "Filename", DBUS_TYPE_STRING, &transfer->filename);
+
+	if (transfer->file_location != NULL)
+		append_entry(&dict, "Filename", DBUS_TYPE_STRING,
+					&transfer->file_location->filename);
 
 	dbus_message_iter_close_container(&iter, &dict);
 
@@ -193,15 +205,50 @@ static GDBusMethodTable obc_transfer_methods[] = {
 	{ }
 };
 
+static void free_file_location(struct obc_transfer *transfer)
+{
+	struct file_location *location = transfer->file_location;
+
+	if (location == NULL)
+		return;
+
+	if (location->fd > 0)
+		close(location->fd);
+
+	g_free(location->filename);
+	g_free(location);
+
+	transfer->file_location = NULL;
+}
+
+static void free_mem_location(struct obc_transfer *transfer)
+{
+	struct mem_location *location = transfer->mem_location;
+
+	if (location == NULL)
+		return;
+
+	transfer->mem_location = NULL;
+
+	switch (transfer->direction) {
+	case OBC_TRANSFER_GET:
+		g_free(location->buffer);
+		break;
+	case OBC_TRANSFER_PUT:
+		if (location->buffer_destroy_func != NULL)
+			location->buffer_destroy_func(location->buffer);
+		break;
+	}
+
+	g_free(location);
+}
+
 static void obc_transfer_free(struct obc_transfer *transfer)
 {
 	DBG("%p", transfer);
 
 	if (transfer->xfer)
 		g_obex_cancel_transfer(transfer->xfer);
-
-	if (transfer->fd > 0)
-		close(transfer->fd);
 
 	if (transfer->params != NULL) {
 		g_free(transfer->params->data);
@@ -214,30 +261,37 @@ static void obc_transfer_free(struct obc_transfer *transfer)
 	if (transfer->obex)
 		g_obex_unref(transfer->obex);
 
+	free_file_location(transfer);
+	free_mem_location(transfer);
+
 	g_free(transfer->callback);
 	g_free(transfer->agent);
-	g_free(transfer->filename);
 	g_free(transfer->name);
 	g_free(transfer->type);
 	g_free(transfer->path);
-	g_free(transfer->buffer);
 	g_free(transfer);
 }
 
-struct obc_transfer *obc_transfer_register(DBusConnection *conn,
-						const char *agent,
-						ObcTransferDirection dir,
-						const char *filename,
-						const char *name,
-						const char *type,
-						struct obc_transfer_params *params)
+static struct obc_transfer *transfer_create(DBusConnection *conn,
+					const char *agent,
+					ObcTransferDirection dir,
+					const char *name,
+					const char *type,
+					struct obc_transfer_params *params,
+					struct file_location *file_location,
+					struct mem_location *mem_location)
 {
 	struct obc_transfer *transfer;
+
+	assert(conn != NULL);
+	assert((type != NULL) || (name != NULL));
+	assert((file_location == NULL) != (mem_location == NULL));
 
 	transfer = g_new0(struct obc_transfer, 1);
 	transfer->direction = dir;
 	transfer->agent = g_strdup(agent);
-	transfer->filename = g_strdup(filename);
+	transfer->file_location = file_location;
+	transfer->mem_location = mem_location;
 	transfer->name = g_strdup(name);
 	transfer->type = g_strdup(type);
 	transfer->params = params;
@@ -283,23 +337,85 @@ void obc_transfer_unregister(struct obc_transfer *transfer)
 	obc_transfer_free(transfer);
 }
 
+struct obc_transfer *obc_transfer_create(DBusConnection *conn,
+					const char *agent,
+					ObcTransferDirection dir,
+					const char *filename,
+					const char *name,
+					const char *type,
+					struct obc_transfer_params *params)
+{
+	struct file_location *file_location;
+
+	assert(filename != NULL);
+
+	file_location = g_malloc0(sizeof(*file_location));
+	file_location->filename = g_strdup(filename);
+
+	return transfer_create(conn, agent, dir, name, type, params,
+					file_location, NULL);
+}
+
+struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
+					const char *agent,
+					ObcTransferDirection dir,
+					void *buffer, gint64 size,
+					GDestroyNotify buffer_destroy_func,
+					const char *name,
+					const char *type,
+					struct obc_transfer_params *params)
+{
+	struct mem_location *mem_location;
+	struct obc_transfer *transfer;
+
+	assert((dir == OBC_TRANSFER_PUT) || (buffer == NULL));
+
+	mem_location = g_malloc0(sizeof(*mem_location));
+
+	switch (dir) {
+	case OBC_TRANSFER_GET:
+		assert(buffer == NULL);
+		mem_location->buffer_len = 1024;
+		mem_location->buffer = g_malloc0(mem_location->buffer_len);
+		break;
+	case OBC_TRANSFER_PUT:
+		assert(buffer != NULL);
+		mem_location->buffer = buffer;
+		mem_location->buffer_len = size;
+		mem_location->buffer_destroy_func = buffer_destroy_func;
+		break;
+	}
+
+	transfer = transfer_create(conn, agent, dir, name, type, params,
+					NULL, mem_location);
+	if (transfer == NULL)
+		return NULL;
+
+	if (dir == OBC_TRANSFER_PUT)
+		transfer->size = size;
+
+	return transfer;
+}
+
 static void obc_transfer_read(struct obc_transfer *transfer,
 						const void *buf, gsize len)
 {
+	struct mem_location *location = transfer->mem_location;
 	gsize bsize;
 
+	assert(location != NULL);
+
 	/* copy all buffered data */
-	bsize = transfer->buffer_len - transfer->filled;
+	bsize = location->buffer_len - transfer->transferred;
 
 	if (bsize < len) {
-		transfer->buffer_len += len - bsize;
-		transfer->buffer = g_realloc(transfer->buffer,
-							transfer->buffer_len);
+		location->buffer_len += len - bsize;
+		location->buffer = g_realloc(location->buffer,
+							location->buffer_len);
 	}
 
-	memcpy(transfer->buffer + transfer->filled, buf, len);
+	memcpy(location->buffer + transfer->transferred, buf, len);
 
-	transfer->filled += len;
 	transfer->transferred += len;
 }
 
@@ -307,7 +423,10 @@ static void get_buf_xfer_complete(GObex *obex, GError *err, gpointer user_data)
 {
 	struct obc_transfer *transfer = user_data;
 	struct transfer_callback *callback = transfer->callback;
+	struct mem_location *location = transfer->mem_location;
 	gsize bsize;
+
+	assert(location != NULL);
 
 	transfer->xfer = 0;
 
@@ -316,19 +435,19 @@ static void get_buf_xfer_complete(GObex *obex, GError *err, gpointer user_data)
 		goto done;
 	}
 
-	if (transfer->filled > 0 &&
-			transfer->buffer[transfer->filled - 1] == '\0')
+	if (transfer->transferred > 0 &&
+		((char *) location->buffer)[transfer->transferred - 1] == '\0')
 		goto done;
 
-	bsize = transfer->buffer_len - transfer->filled;
+	bsize = location->buffer_len - transfer->transferred;
 	if (bsize < 1) {
-		transfer->buffer_len += 1;
-		transfer->buffer = g_realloc(transfer->buffer,
-						transfer->buffer_len);
+		location->buffer_len += 1;
+		location->buffer = g_realloc(location->buffer,
+						location->buffer_len);
 	}
 
-	transfer->buffer[transfer->filled] = '\0';
-	transfer->size = strlen(transfer->buffer);
+	((char *) location->buffer)[transfer->transferred] = '\0';
+	transfer->size = strlen(location->buffer);
 
 done:
 	if (callback)
@@ -425,19 +544,14 @@ static gboolean get_xfer_progress(const void *buf, gsize len,
 {
 	struct obc_transfer *transfer = user_data;
 	struct transfer_callback *callback = transfer->callback;
+	struct file_location *location = transfer->file_location;
 
-	obc_transfer_read(transfer, buf, len);
+	assert(location != NULL);
+	assert(location->fd > 0);
 
-	if (transfer->fd > 0) {
-		gint w;
-
-		w = write(transfer->fd, transfer->buffer, transfer->filled);
-		if (w < 0) {
-			transfer->err = -errno;
-			return FALSE;
-		}
-
-		transfer->filled -= w;
+	if (write(location->fd, buf, len) < (ssize_t) len) {
+		transfer->err = -errno;
+		return FALSE;
 	}
 
 	if (callback && transfer->transferred != transfer->size)
@@ -451,7 +565,10 @@ static gssize put_buf_xfer_progress(void *buf, gsize len, gpointer user_data)
 {
 	struct obc_transfer *transfer = user_data;
 	struct transfer_callback *callback = transfer->callback;
+	struct mem_location *location = transfer->mem_location;
 	gsize size;
+
+	assert(location != NULL);
 
 	if (transfer->transferred == transfer->size)
 		return 0;
@@ -461,7 +578,7 @@ static gssize put_buf_xfer_progress(void *buf, gsize len, gpointer user_data)
 	if (size == 0)
 		return 0;
 
-	memcpy(buf, transfer->buffer + transfer->transferred, size);
+	memcpy(buf, location->buffer + transfer->transferred, size);
 
 	transfer->transferred += size;
 
@@ -476,9 +593,10 @@ static gssize put_xfer_progress(void *buf, gsize len, gpointer user_data)
 {
 	struct obc_transfer *transfer = user_data;
 	struct transfer_callback *callback = transfer->callback;
+	struct file_location *location = transfer->file_location;
 	gssize size;
 
-	size = read(transfer->fd, buf, len);
+	size = read(location->fd, buf, len);
 	if (size <= 0) {
 		transfer->err = -errno;
 		return size;
@@ -524,20 +642,21 @@ static gboolean transfer_start_get(struct obc_transfer *transfer, GError **err)
 		return FALSE;
 	}
 
-	if (transfer->type != NULL &&
-			(strncmp(transfer->type, "x-obex/", 7) == 0 ||
-			strncmp(transfer->type, "x-bt/", 5) == 0)) {
+	if (transfer->mem_location != NULL)
 		rsp_cb = get_buf_xfer_progress;
-	} else {
-		int fd = open(transfer->filename ? : transfer->name,
+	else {
+		const char *filename = transfer->file_location->filename;
+		int fd = open(filename ? : transfer->name,
 				O_WRONLY | O_CREAT, 0600);
+
 		if (fd < 0) {
 			error("open(): %s(%d)", strerror(errno), errno);
 			g_set_error(err, OBC_TRANSFER_ERROR, -EIO,
 							"Cannot open file");
 			return FALSE;
 		}
-		transfer->fd = fd;
+
+		transfer->file_location->fd = fd;
 		data_cb = get_xfer_progress;
 		complete_cb = xfer_complete;
 	}
@@ -582,14 +701,11 @@ static gboolean transfer_start_put(struct obc_transfer *transfer, GError **err)
 		return FALSE;
 	}
 
-	if (transfer->buffer) {
+	if (transfer->mem_location != NULL)
 		data_cb = put_buf_xfer_progress;
-		goto done;
-	}
+	else
+		data_cb = put_xfer_progress;
 
-	data_cb = put_xfer_progress;
-
-done:
 	req = g_obex_packet_new(G_OBEX_OP_PUT, FALSE, G_OBEX_HDR_INVALID);
 
 	if (transfer->name != NULL)
@@ -651,16 +767,13 @@ const void *obc_transfer_get_params(struct obc_transfer *transfer, size_t *size)
 
 const void *obc_transfer_get_buffer(struct obc_transfer *transfer, size_t *size)
 {
-	if (size)
-		*size = transfer->filled;
+	if (transfer->mem_location == NULL)
+		return NULL;
 
-	return transfer->buffer;
-}
+	if (size != NULL)
+		*size = transfer->size;
 
-void obc_transfer_set_buffer(struct obc_transfer *transfer, char *buffer)
-{
-	transfer->size = strlen(buffer);
-	transfer->buffer = buffer;
+	return transfer->mem_location->buffer;
 }
 
 void obc_transfer_set_name(struct obc_transfer *transfer, const char *name)
@@ -672,8 +785,8 @@ void obc_transfer_set_name(struct obc_transfer *transfer, const char *name)
 void obc_transfer_set_filename(struct obc_transfer *transfer,
 					const char *filename)
 {
-	g_free(transfer->filename);
-	transfer->filename = g_strdup(filename);
+	g_free(transfer->file_location->filename);
+	transfer->file_location->filename = g_strdup(filename);
 }
 
 const char *obc_transfer_get_path(struct obc_transfer *transfer)
@@ -691,7 +804,10 @@ int obc_transfer_set_file(struct obc_transfer *transfer)
 	int fd;
 	struct stat st;
 
-	fd = open(transfer->filename, O_RDONLY);
+	if (transfer->file_location != NULL)
+		return 0;
+
+	fd = open(transfer->file_location->filename, O_RDONLY);
 	if (fd < 0) {
 		error("open(): %s(%d)", strerror(errno), errno);
 		return -errno;
@@ -703,7 +819,7 @@ int obc_transfer_set_file(struct obc_transfer *transfer)
 		return -errno;
 	}
 
-	transfer->fd = fd;
+	transfer->file_location->fd = fd;
 	transfer->size = st.st_size;
 
 	return 0;

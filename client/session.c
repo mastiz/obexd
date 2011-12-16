@@ -954,17 +954,19 @@ int obc_session_get(struct obc_session *session, const char *type,
 	else
 		agent = NULL;
 
-	transfer = obc_transfer_register(session->conn, agent,
+	if (targetfile != NULL)
+		transfer = obc_transfer_create(session->conn, agent,
 							OBC_TRANSFER_GET,
-							targetfile, name, type,
-							params);
-	if (transfer == NULL) {
-		if (params != NULL) {
-			g_free(params->data);
-			g_free(params);
-		}
+							name, targetfile,
+							type, params);
+	else
+		transfer = obc_transfer_create_mem(session->conn, agent,
+							OBC_TRANSFER_GET,
+							NULL, 0, NULL,
+							name, type, params);
+
+	if (transfer == NULL)
 		return -EIO;
-	}
 
 	return session_request(session, transfer, func, user_data);
 }
@@ -981,7 +983,7 @@ int obc_session_send(struct obc_session *session, const char *filename,
 
 	agent = obc_agent_get_name(session->agent);
 
-	transfer = obc_transfer_register(session->conn, agent,
+	transfer = obc_transfer_create(session->conn, agent,
 							OBC_TRANSFER_PUT,
 							filename,
 							name, NULL, NULL);
@@ -1047,15 +1049,15 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 
 	agent = obc_agent_get_name(session->agent);
 
-	transfer = obc_transfer_register(session->conn, agent,
+	transfer = obc_transfer_create_mem(session->conn, agent,
 							OBC_TRANSFER_PUT,
-							name, NULL, NULL, NULL);
+							buf, strlen(buf),
+							g_free, name, NULL,
+							NULL);
 	if (transfer == NULL) {
 		g_free(buf);
 		return -EIO;
 	}
-
-	obc_transfer_set_buffer(transfer, buf);
 
 	return session_request(session, transfer, NULL, NULL);
 }
