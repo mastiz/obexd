@@ -45,6 +45,7 @@ struct obc_transfer *obc_transfer_create(DBusConnection *conn,
 					const char *name,
 					const char *type,
 					struct obc_transfer_params *params,
+					gboolean dbus_expose,
 					GError **err);
 
 /* similar as above, but from memory. for get operations, buffer must be NULL */
@@ -56,9 +57,10 @@ struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
 					const char *name,
 					const char *type,
 					struct obc_transfer_params *params,
+					gboolean dbus_expose,
 					GError **err);
 
-void obc_transfer_unregister(struct obc_transfer *transfer);
+void obc_transfer_free(struct obc_transfer *transfer);
 
 gboolean obc_transfer_set_callback(struct obc_transfer *transfer,
 					transfer_callback_t func,
@@ -79,3 +81,4 @@ gboolean obc_transfer_set_filename(struct obc_transfer *transfer,
 					GError **err);
 const char *obc_transfer_get_path(struct obc_transfer *transfer);
 gint64 obc_transfer_get_size(struct obc_transfer *transfer);
+gboolean obc_transfer_is_dbus_exposed(struct obc_transfer *transfer);

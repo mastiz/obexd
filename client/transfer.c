@@ -66,6 +66,12 @@ struct mem_location {
 	GDestroyNotify buffer_destroy_func;
 };
 
+struct dbus_data {
+	DBusConnection *conn;
+	char *agent;
+	char *path;			/* Transfer path */
+};
+
 struct obc_transfer {
 	GObex *obex;
 	ObcTransferDirection direction; /* Put or Get */
@@ -73,9 +79,7 @@ struct obc_transfer {
 	struct mem_location *mem_location;
 	struct obc_transfer_params *params;
 	struct transfer_callback *callback;
-	DBusConnection *conn;
-	char *agent;		/* Transfer agent */
-	char *path;		/* Transfer path */
+	struct dbus_data *dbus_data;
 	char *name;		/* Transfer object name */
 	char *type;		/* Transfer object type */
 	guint xfer;
@@ -129,6 +133,8 @@ static DBusMessage *obc_transfer_get_properties(DBusConnection *connection,
 	struct obc_transfer *transfer = user_data;
 	DBusMessage *reply;
 	DBusMessageIter iter, dict;
+
+	assert(transfer->dbus_data != NULL);
 
 	reply = dbus_message_new_method_return(message);
 	if (!reply)
@@ -224,8 +230,10 @@ static DBusMessage *obc_transfer_cancel(DBusConnection *connection,
 	const gchar *sender;
 	DBusMessage *reply;
 
+	assert(transfer->dbus_data != NULL);
+
 	sender = dbus_message_get_sender(message);
-	if (g_strcmp0(transfer->agent, sender) != 0)
+	if (g_strcmp0(transfer->dbus_data->agent, sender) != 0)
 		return g_dbus_create_error(message,
 				"org.openobex.Error.NotAuthorized",
 				"Not Authorized");
@@ -244,6 +252,24 @@ static GDBusMethodTable obc_transfer_methods[] = {
 	{ "Cancel", "", "", obc_transfer_cancel },
 	{ }
 };
+
+static void dbus_data_free(struct dbus_data *data)
+{
+	if (data == NULL)
+		return;
+
+	if (data->path != NULL) {
+		g_dbus_unregister_interface(data->conn,
+					    data->path, TRANSFER_INTERFACE);
+
+		DBG("unregistered %s", data->path);
+	}
+
+	dbus_connection_unref(data->conn);
+	g_free(data->path);
+	g_free(data->agent);
+	g_free(data);
+}
 
 static void free_file_location(struct obc_transfer *transfer)
 {
@@ -283,7 +309,7 @@ static void free_mem_location(struct obc_transfer *transfer)
 	g_free(location);
 }
 
-static void obc_transfer_free(struct obc_transfer *transfer)
+void obc_transfer_free(struct obc_transfer *transfer)
 {
 	DBG("%p", transfer);
 
@@ -295,20 +321,16 @@ static void obc_transfer_free(struct obc_transfer *transfer)
 		g_free(transfer->params);
 	}
 
-	if (transfer->conn)
-		dbus_connection_unref(transfer->conn);
-
 	if (transfer->obex)
 		g_obex_unref(transfer->obex);
 
+	dbus_data_free(transfer->dbus_data);
 	free_file_location(transfer);
 	free_mem_location(transfer);
 
 	g_free(transfer->callback);
-	g_free(transfer->agent);
 	g_free(transfer->name);
 	g_free(transfer->type);
-	g_free(transfer->path);
 	g_free(transfer);
 }
 
@@ -320,6 +342,7 @@ static struct obc_transfer *transfer_create(DBusConnection *conn,
 					struct obc_transfer_params *params,
 					struct file_location *file_location,
 					struct mem_location *mem_location,
+					gboolean dbus_expose,
 					GError **err)
 {
 	struct obc_transfer *transfer;
@@ -330,56 +353,39 @@ static struct obc_transfer *transfer_create(DBusConnection *conn,
 
 	transfer = g_new0(struct obc_transfer, 1);
 	transfer->direction = dir;
-	transfer->agent = g_strdup(agent);
 	transfer->file_location = file_location;
 	transfer->mem_location = mem_location;
 	transfer->name = g_strdup(name);
 	transfer->type = g_strdup(type);
 	transfer->params = params;
 
-	/* for OBEX specific mime types we don't need to register a transfer */
-	if (type != NULL &&
-			(strncmp(type, "x-obex/", 7) == 0 ||
-			strncmp(type, "x-bt/", 5) == 0))
+	if (!dbus_expose) {
+		DBG("%p created but not registered", transfer);
 		goto done;
+	}
 
-	transfer->path = g_strdup_printf("%s/transfer%ju",
-			TRANSFER_BASEPATH, counter++);
+	transfer->dbus_data = g_malloc0(sizeof(struct dbus_data));
+	transfer->dbus_data->conn = dbus_connection_ref(conn);
+	transfer->dbus_data->agent = g_strdup(agent);
+	transfer->dbus_data->path = g_strdup_printf("%s/transfer%ju",
+						TRANSFER_BASEPATH, counter++);
 
-	transfer->conn = dbus_bus_get(DBUS_BUS_SESSION, NULL);
-	if (transfer->conn == NULL) {
+	if (g_dbus_register_interface(transfer->dbus_data->conn,
+				transfer->dbus_data->path, TRANSFER_INTERFACE,
+				obc_transfer_methods, NULL,
+				NULL, transfer, NULL) == FALSE) {
+		g_free(transfer->dbus_data->path);
+		transfer->dbus_data->path = NULL;
 		obc_transfer_free(transfer);
 		g_set_error(err, OBC_TRANSFER_ERROR, -EIO,
 						"Unable to register transfer");
 		return NULL;
 	}
 
-	if (g_dbus_register_interface(transfer->conn, transfer->path,
-				TRANSFER_INTERFACE,
-				obc_transfer_methods, NULL, NULL,
-				transfer, NULL) == FALSE) {
-		obc_transfer_free(transfer);
-		g_set_error(err, OBC_TRANSFER_ERROR, -EIO,
-						"Unable to register transfer");
-		return NULL;
-	}
+	DBG("%p registered %s", transfer, transfer->dbus_data->path);
 
 done:
-	DBG("%p registered %s", transfer, transfer->path);
-
 	return transfer;
-}
-
-void obc_transfer_unregister(struct obc_transfer *transfer)
-{
-	if (transfer->path) {
-		g_dbus_unregister_interface(transfer->conn,
-			transfer->path, TRANSFER_INTERFACE);
-	}
-
-	DBG("%p unregistered %s", transfer, transfer->path);
-
-	obc_transfer_free(transfer);
 }
 
 static gboolean transfer_open_file(struct obc_transfer *transfer, GError **err)
@@ -426,6 +432,7 @@ struct obc_transfer *obc_transfer_create(DBusConnection *conn,
 					const char *name,
 					const char *type,
 					struct obc_transfer_params *params,
+					gboolean dbus_expose,
 					GError **err)
 {
 	struct file_location *file_location;
@@ -437,7 +444,7 @@ struct obc_transfer *obc_transfer_create(DBusConnection *conn,
 	file_location->filename = g_strdup(filename);
 
 	transfer = transfer_create(conn, agent, dir, name, type, params,
-					file_location, NULL, err);
+					file_location, NULL, dbus_expose, err);
 	if (transfer == NULL)
 		return NULL;
 
@@ -457,6 +464,7 @@ struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
 					const char *name,
 					const char *type,
 					struct obc_transfer_params *params,
+					gboolean dbus_expose,
 					GError **err)
 {
 	struct mem_location *mem_location;
@@ -481,7 +489,7 @@ struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
 	}
 
 	transfer = transfer_create(conn, agent, dir, name, type, params,
-					NULL, mem_location, err);
+					NULL, mem_location, dbus_expose, err);
 	if (transfer == NULL)
 		return NULL;
 
@@ -806,10 +814,18 @@ done:
 
 const char *obc_transfer_get_path(struct obc_transfer *transfer)
 {
-	return transfer->path;
+	if (transfer->dbus_data == NULL)
+		return NULL;
+
+	return transfer->dbus_data->path;
 }
 
 gint64 obc_transfer_get_size(struct obc_transfer *transfer)
 {
 	return transfer->size;
+}
+
+gboolean obc_transfer_is_dbus_exposed(struct obc_transfer *transfer)
+{
+	return (transfer->dbus_data != NULL);
 }

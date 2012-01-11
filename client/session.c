@@ -165,7 +165,7 @@ static struct pending_request *pending_request_new(struct obc_session *session,
 static void pending_request_free(struct pending_request *p)
 {
 	if (p->transfer)
-		obc_transfer_unregister(p->transfer);
+		obc_transfer_free(p->transfer);
 
 	if (p->session)
 		obc_session_unref(p->session);
@@ -967,13 +967,14 @@ int obc_session_get(struct obc_session *session, const char *type,
 		transfer = obc_transfer_create(session->conn, agent,
 							OBC_TRANSFER_GET,
 							name, targetfile,
-							type, params, &err);
+							type, params, TRUE,
+							&err);
 	else
 		transfer = obc_transfer_create_mem(session->conn, agent,
 							OBC_TRANSFER_GET,
 							NULL, 0, NULL,
 							name, type, params,
-							&err);
+							TRUE, &err);
 
 	if (transfer == NULL) {
 		int result = err->code;
@@ -999,7 +1000,8 @@ int obc_session_send(struct obc_session *session, const char *filename,
 	transfer = obc_transfer_create(session->conn, agent,
 							OBC_TRANSFER_PUT,
 							filename,
-							name, NULL, NULL, &err);
+							name, NULL, NULL,
+							TRUE, &err);
 	if (transfer == NULL) {
 		int result = err->code;
 		g_error_free(err);
@@ -1064,7 +1066,7 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 							OBC_TRANSFER_PUT,
 							buf, strlen(buf),
 							g_free, name, NULL,
-							NULL, &err);
+							NULL, FALSE, &err);
 	if (transfer == NULL) {
 		int result = err->code;
 		g_error_free(err);
