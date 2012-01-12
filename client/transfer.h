@@ -44,7 +44,8 @@ struct obc_transfer *obc_transfer_create(DBusConnection *conn,
 					const char *filename,
 					const char *name,
 					const char *type,
-					struct obc_transfer_params *params);
+					struct obc_transfer_params *params,
+					GError **err);
 
 /* similar as above, but from memory. for get operations, buffer must be NULL */
 struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
@@ -54,7 +55,8 @@ struct obc_transfer *obc_transfer_create_mem(DBusConnection *conn,
 					GDestroyNotify buffer_destroy_func,
 					const char *name,
 					const char *type,
-					struct obc_transfer_params *params);
+					struct obc_transfer_params *params,
+					GError **err);
 
 void obc_transfer_unregister(struct obc_transfer *transfer);
 
@@ -72,8 +74,8 @@ const void *obc_transfer_get_params(struct obc_transfer *transfer,
 const void *obc_transfer_get_buffer(struct obc_transfer *transfer,
 								size_t *size);
 void obc_transfer_set_name(struct obc_transfer *transfer, const char *name);
-void obc_transfer_set_filename(struct obc_transfer *transfer,
-					const char *filename);
+gboolean obc_transfer_set_filename(struct obc_transfer *transfer,
+					const char *filename,
+					GError **err);
 const char *obc_transfer_get_path(struct obc_transfer *transfer);
 gint64 obc_transfer_get_size(struct obc_transfer *transfer);
-int obc_transfer_set_file(struct obc_transfer *transfer);

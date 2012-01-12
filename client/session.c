@@ -688,8 +688,16 @@ static void session_request_reply(DBusPendingCall *call, gpointer user_data)
 	if (strlen(name)) {
 		if (obc_transfer_get_dir(transfer) == OBC_TRANSFER_PUT)
 			obc_transfer_set_name(transfer, name);
-		else
-			obc_transfer_set_filename(transfer, name);
+		else {
+			GError *gerr = NULL;
+
+			if (!obc_transfer_set_filename(transfer, name, &gerr)) {
+				session_terminate_transfer(session, transfer,
+									gerr);
+				g_clear_error(&gerr);
+				return;
+			}
+		}
 	}
 
 	if (p->auth_complete)
@@ -938,6 +946,7 @@ int obc_session_get(struct obc_session *session, const char *type,
 	struct obc_transfer *transfer;
 	struct obc_transfer_params *params = NULL;
 	const char *agent;
+	GError *err = NULL;
 
 	if (session->obex == NULL)
 		return -ENOTCONN;
@@ -958,15 +967,19 @@ int obc_session_get(struct obc_session *session, const char *type,
 		transfer = obc_transfer_create(session->conn, agent,
 							OBC_TRANSFER_GET,
 							name, targetfile,
-							type, params);
+							type, params, &err);
 	else
 		transfer = obc_transfer_create_mem(session->conn, agent,
 							OBC_TRANSFER_GET,
 							NULL, 0, NULL,
-							name, type, params);
+							name, type, params,
+							&err);
 
-	if (transfer == NULL)
-		return -EIO;
+	if (transfer == NULL) {
+		int result = err->code;
+		g_error_free(err);
+		return result;
+	}
 
 	return session_request(session, transfer, func, user_data);
 }
@@ -976,7 +989,7 @@ int obc_session_send(struct obc_session *session, const char *filename,
 {
 	struct obc_transfer *transfer;
 	const char *agent;
-	int err;
+	GError *err = NULL;
 
 	if (session->obex == NULL)
 		return -ENOTCONN;
@@ -986,14 +999,11 @@ int obc_session_send(struct obc_session *session, const char *filename,
 	transfer = obc_transfer_create(session->conn, agent,
 							OBC_TRANSFER_PUT,
 							filename,
-							name, NULL, NULL);
-	if (transfer == NULL)
-		return -EINVAL;
-
-	err = obc_transfer_set_file(transfer);
-	if (err < 0) {
-		obc_transfer_unregister(transfer);
-		return err;
+							name, NULL, NULL, &err);
+	if (transfer == NULL) {
+		int result = err->code;
+		g_error_free(err);
+		return result;
 	}
 
 	return session_request(session, transfer, NULL, NULL);
@@ -1041,6 +1051,7 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 {
 	struct obc_transfer *transfer;
 	const char *agent;
+	GError *err = NULL;
 
 	if (session->obex == NULL) {
 		g_free(buf);
@@ -1053,10 +1064,11 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 							OBC_TRANSFER_PUT,
 							buf, strlen(buf),
 							g_free, name, NULL,
-							NULL);
+							NULL, &err);
 	if (transfer == NULL) {
-		g_free(buf);
-		return -EIO;
+		int result = err->code;
+		g_error_free(err);
+		return result;
 	}
 
 	return session_request(session, transfer, NULL, NULL);
