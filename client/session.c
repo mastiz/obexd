@@ -921,7 +921,7 @@ static void session_start_transfer(gpointer data, gpointer user_data)
 	struct obc_transfer *transfer = user_data;
 	GError *err = NULL;
 
-	if (!obc_transfer_start(transfer, &err)) {
+	if (!obc_transfer_start(transfer, session->obex, &err)) {
 		session_notify_error(session, transfer, err);
 		g_clear_error(&err);
 		return;
@@ -954,8 +954,7 @@ int obc_session_get(struct obc_session *session, const char *type,
 	else
 		agent = NULL;
 
-	transfer = obc_transfer_register(session->conn, session->obex,
-							agent,
+	transfer = obc_transfer_register(session->conn, agent,
 							OBC_TRANSFER_GET,
 							targetfile, name, type,
 							params);
@@ -982,7 +981,7 @@ int obc_session_send(struct obc_session *session, const char *filename,
 
 	agent = obc_agent_get_name(session->agent);
 
-	transfer = obc_transfer_register(session->conn, session->obex, agent,
+	transfer = obc_transfer_register(session->conn, agent,
 							OBC_TRANSFER_PUT,
 							filename,
 							name, NULL, NULL);
@@ -1048,7 +1047,7 @@ int obc_session_put(struct obc_session *session, char *buf, const char *name)
 
 	agent = obc_agent_get_name(session->agent);
 
-	transfer = obc_transfer_register(session->conn, session->obex, agent,
+	transfer = obc_transfer_register(session->conn, agent,
 							OBC_TRANSFER_PUT,
 							name, NULL, NULL, NULL);
 	if (transfer == NULL) {
