@@ -35,6 +35,7 @@
 #include <gdbus.h>
 
 #include "log.h"
+#include "transfer.h"
 #include "session.h"
 #include "manager.h"
 #include "bluetooth.h"
@@ -112,7 +113,8 @@ static void create_callback(struct obc_session *session, GError *err,
 		const gchar *filename = g_ptr_array_index(data->files, i);
 		gchar *basename = g_path_get_basename(filename);
 
-		if (obc_session_send(session, filename, basename) < 0) {
+		if (!obc_session_put_file(session, basename, filename, TRUE,
+								NULL)) {
 			g_free(basename);
 			break;
 		}
@@ -247,6 +249,7 @@ static DBusMessage *send_files(DBusConnection *connection,
 }
 
 static void pull_complete_callback(struct obc_session *session,
+					struct obc_transfer *transfer,
 					GError *err, void *user_data)
 {
 	struct send_data *data = user_data;
@@ -284,8 +287,9 @@ static void pull_obc_session_callback(struct obc_session *session,
 		goto done;
 	}
 
-	obc_session_pull(session, "text/x-vcard", data->filename,
-						pull_complete_callback, data);
+	obc_session_get_mem(session, "text/x-vcard", data->filename, NULL, 0,
+						pull_complete_callback, data,
+						FALSE, NULL);
 
 	return;
 
@@ -439,6 +443,7 @@ static DBusMessage *remove_session(DBusConnection *connection,
 }
 
 static void capabilities_complete_callback(struct obc_session *session,
+						struct obc_transfer *transfer,
 						GError *err, void *user_data)
 {
 	struct send_data *data = user_data;
@@ -453,7 +458,7 @@ static void capabilities_complete_callback(struct obc_session *session,
 		goto done;
 	}
 
-	capabilities = obc_session_get_buffer(session, &size);
+	capabilities = obc_transfer_get_buffer(transfer, &size);
 	if (size == 0)
 		capabilities = "";
 
@@ -484,8 +489,9 @@ static void capability_obc_session_callback(struct obc_session *session,
 		goto done;
 	}
 
-	obc_session_pull(session, "x-obex/capability", NULL,
-				capabilities_complete_callback, data);
+	obc_session_get_mem(session, "x-obex/capability", NULL, NULL, 0,
+				capabilities_complete_callback, data,
+				FALSE, NULL);
 
 	return;
 

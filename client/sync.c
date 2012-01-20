@@ -27,6 +27,7 @@
 #endif
 
 #include <errno.h>
+#include <string.h>
 
 #include <glib.h>
 #include <gdbus.h>
@@ -34,6 +35,7 @@
 #include "log.h"
 
 #include "session.h"
+#include "transfer.h"
 #include "driver.h"
 #include "sync.h"
 
@@ -83,18 +85,16 @@ static DBusMessage *sync_setlocation(DBusConnection *connection,
 }
 
 static void sync_getphonebook_callback(struct obc_session *session,
+					struct obc_transfer *transfer,
 					GError *err, void *user_data)
 {
 	struct sync_data *sync = user_data;
 	DBusMessage *reply;
 	const char *buf;
-	size_t size;
 
 	reply = dbus_message_new_method_return(sync->msg);
 
-	buf = obc_session_get_buffer(session, &size);
-	if (buf == NULL)
-		buf = "";
+	buf = obc_transfer_get_buffer(transfer, NULL);
 
 	dbus_message_append_args(reply,
 		DBUS_TYPE_STRING, &buf,
@@ -109,6 +109,7 @@ static DBusMessage *sync_getphonebook(DBusConnection *connection,
 			DBusMessage *message, void *user_data)
 {
 	struct sync_data *sync = user_data;
+	GError *err = NULL;
 
 	if (sync->msg)
 		return g_dbus_create_error(message,
@@ -118,10 +119,16 @@ static DBusMessage *sync_getphonebook(DBusConnection *connection,
 	if (!sync->phonebook_path)
 		sync->phonebook_path = g_strdup("telecom/pb.vcf");
 
-	if (obc_session_get(sync->session, "phonebook", sync->phonebook_path, NULL,
-				NULL, 0, sync_getphonebook_callback, sync) < 0)
-		return g_dbus_create_error(message,
-			ERROR_INF ".Failed", "Failed");
+	if (!obc_session_get_mem(sync->session, "phonebook",
+					sync->phonebook_path, NULL, 0,
+					sync_getphonebook_callback, sync,
+					TRUE, &err)) {
+		DBusMessage *reply;
+		reply = g_dbus_create_error(message,
+				ERROR_INF ".Failed", "%s", err->message);
+		g_error_free(err);
+		return reply;
+	}
 
 	sync->msg = dbus_message_ref(message);
 
@@ -134,6 +141,7 @@ static DBusMessage *sync_putphonebook(DBusConnection *connection,
 	struct sync_data *sync = user_data;
 	const char *buf;
 	char *buffer;
+	GError *err = NULL;
 
 	if (dbus_message_get_args(message, NULL,
 			DBUS_TYPE_STRING, &buf,
@@ -147,9 +155,14 @@ static DBusMessage *sync_putphonebook(DBusConnection *connection,
 
 	buffer = g_strdup(buf);
 
-	if (obc_session_put(sync->session, buffer, sync->phonebook_path) < 0)
-		return g_dbus_create_error(message,
-				ERROR_INF ".Failed", "Failed");
+	if (!obc_session_put_mem(sync->session, sync->phonebook_path, buffer,
+				strlen(buffer), g_free, TRUE, &err)) {
+		DBusMessage *reply;
+		reply = g_dbus_create_error(message,
+				ERROR_INF ".Failed", "%s", err->message);
+		g_error_free(err);
+		return reply;
+	}
 
 	return dbus_message_new_method_return(message);
 }

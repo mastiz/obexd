@@ -32,6 +32,7 @@
 
 #include "map.h"
 #include "session.h"
+#include "transfer.h"
 #include "driver.h"
 
 #define OBEX_MAS_UUID \
@@ -93,13 +94,13 @@ static DBusMessage *map_setpath(DBusConnection *connection,
 	return NULL;
 }
 
-static void buffer_cb(struct obc_session *session, GError *err,
-							void *user_data)
+static void buffer_cb(struct obc_session *session,
+					struct obc_transfer *transfer,
+					GError *err, void *user_data)
 {
 	struct map_data *map = user_data;
 	DBusMessage *reply;
 	const char *buf;
-	size_t size;
 
 	if (err != NULL) {
 		reply = g_dbus_create_error(map->msg,
@@ -108,9 +109,7 @@ static void buffer_cb(struct obc_session *session, GError *err,
 		goto done;
 	}
 
-	buf = obc_session_get_buffer(session, &size);
-	if (size == 0)
-		buf = "";
+	buf = obc_transfer_get_buffer(transfer, NULL);
 
 	reply = g_dbus_create_reply(map->msg, DBUS_TYPE_STRING, &buf,
 							DBUS_TYPE_INVALID);
@@ -124,14 +123,18 @@ static DBusMessage *map_get_folder_listing(DBusConnection *connection,
 					DBusMessage *message, void *user_data)
 {
 	struct map_data *map = user_data;
-	int err;
+	GError *err = NULL;
 
-	err = obc_session_get(map->session, "x-obex/folder-listing",
-							NULL, NULL, NULL, 0,
-							buffer_cb, map);
-	if (err < 0)
-		return g_dbus_create_error(message, "org.openobex.Error.Failed",
-									NULL);
+	if (!obc_session_get_mem(map->session, "x-obex/folder-listing", NULL,
+						NULL, 0, buffer_cb, map,
+						FALSE, &err)) {
+		DBusMessage *reply;
+		reply =  g_dbus_create_error(message,
+						"org.openobex.Error.Failed",
+						"%s", err->message);
+		g_error_free(err);
+		return reply;
+	}
 
 	map->msg = dbus_message_ref(message);
 
@@ -142,7 +145,7 @@ static DBusMessage *map_get_message_listing(DBusConnection *connection,
 					DBusMessage *message, void *user_data)
 {
 	struct map_data *map = user_data;
-	int err;
+	GError *err = NULL;
 	const char *folder;
 	DBusMessageIter msg_iter;
 
@@ -154,12 +157,16 @@ static DBusMessage *map_get_message_listing(DBusConnection *connection,
 
 	dbus_message_iter_get_basic(&msg_iter, &folder);
 
-	err = obc_session_get(map->session, "x-bt/MAP-msg-listing", folder,
-							NULL, NULL, 0,
-							buffer_cb, map);
-	if (err < 0)
-		return g_dbus_create_error(message, "org.openobex.Error.Failed",
-									NULL);
+	if (!obc_session_get_mem(map->session, "x-bt/MAP-msg-listing", folder,
+						NULL, 0, buffer_cb, map,
+						FALSE, &err)) {
+		DBusMessage *reply;
+		reply =  g_dbus_create_error(message,
+						"org.openobex.Error.Failed",
+						"%s", err->message);
+		g_error_free(err);
+		return reply;
+	}
 
 	map->msg = dbus_message_ref(message);
 
