@@ -537,16 +537,17 @@ static gboolean handle_get_body(struct obc_transfer *transfer, GObexPacket *rsp)
 		}
 	} else {
 		struct mem_location *location = transfer->mem_location;
-		gsize bsize;
+		gint64 req_size;
 
 		assert(location != NULL);
 
-		/* copy all buffered data */
-		bsize = location->buffer_len - transfer->transferred;
-
 		/* for convenience, leave space for final null character */
-		if (bsize < len + 1) {
-			location->buffer_len += len + 1 - bsize;
+		req_size = transfer->transferred + len + 1;
+
+		if (location->buffer_len < req_size) {
+			while (location->buffer_len < req_size)
+				location->buffer_len *= 2;
+
 			location->buffer = g_realloc(location->buffer,
 							location->buffer_len);
 		}
