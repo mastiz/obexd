@@ -1156,10 +1156,9 @@ static struct obc_transfer *obc_session_get_transfer(
 	return session->p->transfer;
 }
 
-const char *obc_session_get_buffer(struct obc_session *session, size_t *size)
+const void *obc_session_get_buffer(struct obc_session *session, size_t *size)
 {
 	struct obc_transfer *transfer;
-	const char *buf;
 
 	transfer = obc_session_get_transfer(session);
 	if (transfer == NULL) {
@@ -1169,29 +1168,18 @@ const char *obc_session_get_buffer(struct obc_session *session, size_t *size)
 		return NULL;
 	}
 
-	buf = obc_transfer_get_buffer(transfer, size);
-
-	obc_transfer_clear_buffer(transfer);
-
-	return buf;
+	return obc_transfer_get_buffer(transfer, size);
 }
 
-void *obc_session_get_params(struct obc_session *session, size_t *size)
+const void *obc_session_get_params(struct obc_session *session, size_t *size)
 {
 	struct obc_transfer *transfer;
-	struct obc_transfer_params params;
 
-	transfer= obc_session_get_transfer(session);
+	transfer = obc_session_get_transfer(session);
 	if (transfer == NULL)
 		return NULL;
 
-	if (obc_transfer_get_params(transfer, &params) < 0)
-		return NULL;
-
-	if (size)
-		*size = params.size;
-
-	return params.data;
+	return obc_transfer_get_params(transfer, size);
 }
 
 static void setpath_complete(struct obc_session *session, GError *err,
