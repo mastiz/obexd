@@ -44,6 +44,7 @@
 
 #define TRANSFER_INTERFACE  "org.openobex.Transfer"
 #define TRANSFER_BASEPATH   "/org/openobex"
+#define TRANSFER_TMP_TEMPLATE  "/tmp/obex-client-get-XXXXXX"
 
 #define DEFAULT_BUFFER_SIZE 4096
 
@@ -371,10 +372,19 @@ static gboolean transfer_open_file(struct obc_transfer *transfer, GError **err)
 	if (transfer->direction == OBC_TRANSFER_PUT) {
 		DBG("opening file: %s", location->filename);
 		fd = open(location->filename, O_RDONLY);
-	} else {
-		fd = open(location->filename ? : transfer->name,
-					O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	} else if ((location->filename != NULL) && location->filename[0]) {
+		fd = open(location->filename, O_WRONLY | O_CREAT | O_TRUNC,
+									0600);
 		DBG("creating file: %s", location->filename);
+	} else {
+		mode_t old_mask = umask(033);
+
+		g_free(location->filename);
+		location->filename = g_strdup(TRANSFER_TMP_TEMPLATE);
+		fd = mkstemp(location->filename);
+		umask(old_mask);
+
+		DBG("creating temporary file: %s", location->filename);
 	}
 
 	if (fd < 0) {
